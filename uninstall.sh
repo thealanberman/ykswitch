@@ -5,5 +5,5 @@ set -euo pipefail
 BIN=/usr/local/bin/ykswitch
 
 [[ -x $BIN ]] && sudo "$BIN" on
-sudo rm -f "$BIN" /etc/sudoers.d/ykswitch /var/run/ykswitch.pid
+sudo rm -f "$BIN" /etc/sudoers.d/ykswitch /var/run/ykswitch.pid /var/run/ykswitch.timer.pid
 echo "uninstalled"

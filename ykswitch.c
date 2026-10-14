@@ -1,6 +1,7 @@
 // ykswitch - block/unblock YubiKey OTP keystrokes by seizing its HID keyboard
 // interface. Run as root: `ykswitch off` forks a holder process; `ykswitch on`
-// kills it, which releases the device.
+// kills it, which releases the device. `ykswitch on -t N` re-blocks after N
+// seconds via a detached timer process.
 //
 // build: clang -O2 -o ykswitch ykswitch.c -framework IOKit -framework CoreFoundation
 
@@ -14,6 +15,7 @@
 #include <unistd.h>
 
 #define PIDFILE "/var/run/ykswitch.pid"
+#define TIMERFILE "/var/run/ykswitch.timer.pid"
 #define YUBICO_VID 0x1050
 
 static int seized;
@@ -29,14 +31,29 @@ static void on_match(void *ctx, IOReturn r, void *sender, IOHIDDeviceRef dev) {
         seized++;
 }
 
-static pid_t holder_pid(void) {
-    FILE *f = fopen(PIDFILE, "r");
+static pid_t read_pid(const char *path) {
+    FILE *f = fopen(path, "r");
     if (!f) return 0;
     int pid = 0;
     fscanf(f, "%d", &pid);
     fclose(f);
     if (pid > 0 && (kill(pid, 0) == 0 || errno == EPERM)) return pid;
     return 0;
+}
+
+static pid_t holder_pid(void) { return read_pid(PIDFILE); }
+
+static void cancel_timer(void) {
+    pid_t pid = read_pid(TIMERFILE);
+    if (pid) kill(pid, SIGTERM);
+    unlink(TIMERFILE);
+}
+
+static void detach(void) {
+    setsid();
+    freopen("/dev/null", "r", stdin);
+    freopen("/dev/null", "w", stdout);
+    freopen("/dev/null", "w", stderr);
 }
 
 static void hold(int report_fd) {
@@ -59,6 +76,7 @@ static void hold(int report_fd) {
 }
 
 static int cmd_off(void) {
+    cancel_timer();
     if (holder_pid()) { puts("already off"); return 0; }
     int p[2];
     if (pipe(p) != 0) { perror("pipe"); return 1; }
@@ -66,10 +84,7 @@ static int cmd_off(void) {
     if (pid < 0) { perror("fork"); return 1; }
     if (pid == 0) {
         close(p[0]);
-        setsid();
-        freopen("/dev/null", "r", stdin);
-        freopen("/dev/null", "w", stdout);
-        freopen("/dev/null", "w", stderr);
+        detach();
         FILE *f = fopen(PIDFILE, "w");
         if (f) { fprintf(f, "%d\n", getpid()); fclose(f); }
         hold(p[1]);
@@ -86,11 +101,23 @@ static int cmd_off(void) {
     return 0;
 }
 
-static int cmd_on(void) {
+static int cmd_on(long secs) {
+    cancel_timer();
     pid_t pid = holder_pid();
     if (pid) kill(pid, SIGTERM);
     unlink(PIDFILE);
-    puts("on");
+    if (secs <= 0) { puts("on"); return 0; }
+    pid = fork();
+    if (pid < 0) { perror("fork"); return 1; }
+    if (pid == 0) {
+        detach();
+        FILE *f = fopen(TIMERFILE, "w");
+        if (f) { fprintf(f, "%d\n", getpid()); fclose(f); }
+        sleep(secs);
+        unlink(TIMERFILE);
+        _exit(cmd_off());
+    }
+    printf("on for %lds\n", secs);
     return 0;
 }
 
@@ -102,8 +129,13 @@ int main(int argc, char **argv) {
     }
     if (geteuid() != 0) { fprintf(stderr, "ykswitch %s: must run as root\n", cmd); return 1; }
     if (!strcmp(cmd, "off")) return cmd_off();
-    if (!strcmp(cmd, "on")) return cmd_on();
-    if (!strcmp(cmd, "toggle")) return holder_pid() ? cmd_on() : cmd_off();
-    fprintf(stderr, "usage: ykswitch [on|off|toggle|status]\n");
+    if (!strcmp(cmd, "on")) {
+        if (argc == 2) return cmd_on(0);
+        char *end;
+        long secs = argc == 4 && !strcmp(argv[2], "-t") ? strtol(argv[3], &end, 10) : 0;
+        if (secs > 0 && !*end) return cmd_on(secs);
+    }
+    if (!strcmp(cmd, "toggle")) return holder_pid() ? cmd_on(0) : cmd_off();
+    fprintf(stderr, "usage: ykswitch [on [-t seconds]|off|toggle|status]\n");
     return 2;
 }

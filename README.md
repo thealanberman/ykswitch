@@ -17,11 +17,12 @@ clang -O2 -o ykswitch ykswitch.c -framework IOKit -framework CoreFoundation
 ```
 sudo ykswitch off      # block typing
 sudo ykswitch on       # allow typing
+sudo ykswitch on -t 30 # allow typing for 30 seconds, then block again
 sudo ykswitch toggle
 ykswitch status        # prints on|off; no root needed
 ```
 
-`off` forks a background process that holds the key and records its PID in `/var/run/ykswitch.pid`. A key plugged in while it's running is blocked too. `on` kills that process, which releases the key.
+`off` forks a background process that holds the key and records its PID in `/var/run/ykswitch.pid`. A key plugged in while it's running is blocked too. `on` kills that process, which releases the key. `on -t N` also forks a timer process (PID in `/var/run/ykswitch.timer.pid`) that runs `off` after N seconds; any later `on` or `off` cancels it.
 
 ## Why root
 
